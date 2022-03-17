@@ -538,11 +538,6 @@ class AppDelegate: NSObject {
     
     // MARK: - Migration
     
-    @objc(migrationForceUpdateCores:)
-    func migrationForceUpdateCores() throws {
-        CoreUpdater.shared.checkForUpdatesAndInstall()
-    }
-    
     @objc(migrationRemoveCoreDefaults:)
     func migrationRemoveCoreDefaults() throws {
         let defaults = UserDefaults.standard
@@ -819,8 +814,6 @@ extension AppDelegate: NSMenuDelegate {
         loadPlugins()
         removeIncompatibleSaveStates()
         
-        CoreUpdater.shared.checkForUpdatesAndInstall()
-        
         if !restoreWindow {
             _ = mainWindowController.window
         }
@@ -848,7 +841,7 @@ extension AppDelegate: NSMenuDelegate {
             mainWindowController.showWindow(nil)
         }
         
-        CoreUpdater.shared.checkForNewCores()   // TODO: check error from completion handler
+        CoreUpdater.shared.checkForUpdates(andInstall: true)
         
         let userDefaultsController = NSUserDefaultsController.shared
         bind(.logHIDEvents, to: userDefaultsController, withKeyPath: "values.logsHIDEvents", options: nil)

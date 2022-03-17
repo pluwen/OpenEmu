@@ -38,10 +38,11 @@ final class CoreDownload: NSObject {
     var hasUpdate = false
     var canBeInstalled = false
     
+    var url: URL?
+    var sha256: String?
+    
     private(set) var isDownloading = false
     @objc private(set) dynamic var progress: Double = 0
-    
-    var appcastItem: CoreAppcastItem?
     
     private var downloadSession: URLSession?
     
@@ -51,7 +52,7 @@ final class CoreDownload: NSObject {
     }
     
     func start() {
-        guard let appcastItem = appcastItem, !isDownloading else { return }
+        guard let url = url, !isDownloading else { return }
         
         assert(downloadSession == nil, "There shouldn't be a previous download session.")
         
@@ -59,7 +60,7 @@ final class CoreDownload: NSObject {
         downloadSession.sessionDescription = bundleIdentifier
         self.downloadSession = downloadSession
         
-        let downloadTask = downloadSession.downloadTask(with: appcastItem.fileURL)
+        let downloadTask = downloadSession.downloadTask(with: url)
         
         DLog("Starting core download (\(downloadSession.sessionDescription ?? ""))")
         
@@ -107,12 +108,7 @@ extension CoreDownload: URLSessionDownloadDelegate {
         downloadSession = nil
         
         if let error = error {
-            if let delegate = delegate,
-               delegate.responds(to: #selector(CoreDownloadDelegate.coreDownloadDidFail(_:withError:))) {
-                delegate.coreDownloadDidFail?(self, withError: error)
-            } else {
-                NSApplication.shared.presentError(error)
-            }
+            delegate?.coreDownloadDidFail(self, withError: error)
         } else {
             delegate?.coreDownloadDidFinish(self)
         }
@@ -126,6 +122,15 @@ extension CoreDownload: URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         
         DLog("Core download (\(session.sessionDescription ?? "")) did finish downloading temporary data.")
+        
+        let fm = FileManager.default
+        guard let sha256 = try? fm.hashFile(at: location, hashFunction: .sha256),
+              sha256 == self.sha256
+        else {
+            os_log(.error, log: .default, "Checksum mismatch for core download %{public}@", bundleIdentifier)
+            try? fm.removeItem(at: location)
+            return
+        }
         
         let coresFolder = URL.oeApplicationSupportDirectory
             .appendingPathComponent("Cores", isDirectory: true)
@@ -155,8 +160,8 @@ extension CoreDownload: URLSessionDownloadDelegate {
     }
 }
 
-@objc protocol CoreDownloadDelegate: NSObjectProtocol {
-    @objc func coreDownloadDidStart(_ download: CoreDownload)
-    @objc func coreDownloadDidFinish(_ download: CoreDownload)
-    @objc optional func coreDownloadDidFail(_ download: CoreDownload, withError error: Error?)
+protocol CoreDownloadDelegate: AnyObject {
+    func coreDownloadDidStart(_ download: CoreDownload)
+    func coreDownloadDidFinish(_ download: CoreDownload)
+    func coreDownloadDidFail(_ download: CoreDownload, withError error: Error?)
 }

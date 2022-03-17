@@ -25,7 +25,6 @@
 import Foundation
 import OpenEmuKit
 import Sparkle.SUStandardVersionComparator
-import OSLog
 
 final class CoreUpdater: NSObject {
     
@@ -34,21 +33,23 @@ final class CoreUpdater: NSObject {
         case newCoreCheckAlreadyPendingError
     }
     
+    private static let coreListURL = URL(string: "https://raw.githubusercontent.com/OpenEmu/OpenEmu-Update/master/cores.json")!
+    
     static let shared = CoreUpdater()
     
     @objc dynamic private(set) var coreList: [CoreDownload] = []
     
-    var completionHandler: ((_ plugin: OECorePlugin?, Error?) -> Void)?
-    var coreIdentifier: String?
-    var alert: OEAlert?
-    var coreDownload: CoreDownload?
+    private var completionHandler: ((_ plugin: OECorePlugin?, Error?) -> Void)?
+    private var coreIdentifier: String?
+    private var alert: OEAlert?
+    private var coreDownload: CoreDownload?
     
     private var coresDict: [String : CoreDownload] = [:]
-    private var autoInstall = false
-    private var lastCoreListURLTask: URLSessionDataTask?
+    private var coreListURLTask: URLSessionDataTask?
     private var pendingUserInitiatedDownloads: Set<CoreDownload> = []
+    private var cores: [Core]?
     
-    override init() {
+    private override init() {
         super.init()
         
         for plugin in OECorePlugin.allPlugins {
@@ -68,138 +69,135 @@ final class CoreUpdater: NSObject {
         didChangeValue(forKey: #keyPath(coreList))
     }
     
-    @objc func checkForUpdates() {
-        guard Thread.isMainThread else {
-            performSelector(onMainThread: #selector(checkForUpdates), with: nil, waitUntilDone: false)
-            return
-        }
-        
-        for plugin in OECorePlugin.allPlugins {
-            
-            if let appcastURLString = plugin.infoDictionary["SUFeedURL"] as? String,
-               let feedURL = URL(string: appcastURLString),
-               let item = try? checkForUpdateInformation(url: feedURL, plugin: plugin) {
-                updaterDidFindValidUpdate(for: plugin, item: item)
+    func checkForUpdates(andInstall autoInstall: Bool = false, reloadData: Bool = false, completionHandler handler: ((_ error: Error?) -> Void)? = nil) {
+        if cores == nil || reloadData {
+            DispatchQueue.main.async {
+                self.downloadCoreList { error in
+                    self.checkInstalledCoresForUpdates(andInstall: autoInstall)
+                    self.checkForNewCores()
+                    handler?(error)
+                }
             }
+        } else {
+            checkInstalledCoresForUpdates(andInstall: autoInstall)
+            checkForNewCores()
+            handler?(nil)
         }
     }
     
-    private func checkForUpdateInformation(url: URL, plugin: OECorePlugin) throws -> CoreAppcastItem? {
-        let items: [XMLElement]
-        let appcast = try XMLDocument(contentsOf: url, options: [])
-        items = try appcast.nodes(forXPath: "/rss/channel/item") as! [XMLElement]
-
-        for item in items {
-            if let enclosure = item.elements(forName: "enclosure").first,
-               let fileURL = enclosure.attribute(forName: "url")?.stringValue,
-               let url = URL(string: fileURL),
-               let version = enclosure.attribute(forName: "sparkle:version")?.stringValue,
-               let minOSVersion = item.elements(forName: "sparkle:minimumSystemVersion").first?.stringValue,
-               SUStandardVersionComparator.default.compareVersion(version, toVersion: plugin.version) == .orderedDescending
-            {
-                let item = CoreAppcastItem(url: url, version: version, minOSVersion: minOSVersion)
-                if item.isSupported {
-                    return item
+    private func checkInstalledCoresForUpdates(andInstall autoInstall: Bool) {
+        guard let cores = cores else { return }
+        
+        for corePlugin in OECorePlugin.allPlugins {
+            let corePluginID = corePlugin.bundleIdentifier.lowercased()
+            if let download = coresDict[corePluginID],
+               let core = cores.first(where: { $0.id == corePluginID }) {
+                for release in core.releases {
+                    if SUStandardVersionComparator.default.compareVersion(release.version, toVersion: corePlugin.version) == .orderedDescending,
+                       release.isSupported
+                    {
+                        download.hasUpdate = true
+                        download.url = URL(string: release.url)
+                        download.sha256 = release.sha256
+                        download.delegate = self
+                        
+                        if autoInstall {
+                            download.start()
+                        }
+                        
+                        continue
+                    }
                 }
             }
         }
         
-        return nil
+        updateCoreList()
     }
     
-    func checkForUpdatesAndInstall() {
-        guard ProcessInfo.processInfo.environment["OE_DISABLE_UPDATE_CHECK"] == nil else {
-            os_log(.info, log: .default, "OE_DISABLE_UPDATE_CHECK found; skipping check for updates.")
-            return
+    private func checkForNewCores() {
+        guard let cores = cores else { return }
+        
+        for core in cores {
+            guard coresDict[core.id] == nil else { continue }
+            
+            if core.isDeprecated {
+                continue
+            }
+            
+            if core.isExperimental,
+               Bundle.main.infoDictionary!["OEExperimental"] as? Bool != true {
+                continue
+            }
+            
+            guard let release = core.latestSupportedRelease else {
+                continue
+            }
+            
+            let download = CoreDownload()
+            download.name = core.name
+            download.bundleIdentifier = core.id
+            
+            var systemIdentifiers: [String] = []
+            var systemNames: [String] = []
+            
+            for system in core.systems {
+                systemIdentifiers.append(system)
+            }
+            
+            for systemIdentifier in systemIdentifiers {
+                if let plugin = OESystemPlugin.systemPlugin(forIdentifier: systemIdentifier) {
+                    systemNames.append(plugin.systemName)
+                }
+            }
+            
+            download.systemNames = systemNames
+            download.systemIdentifiers = systemIdentifiers
+            download.canBeInstalled = true
+            
+            download.url = URL(string: release.url)
+            download.sha256 = release.sha256
+            download.delegate = self
+            
+            if download == coreDownload {
+                download.start()
+            }
+            
+            coresDict[core.id] = download
         }
-        autoInstall = true
-        checkForUpdates()
+        
+        updateCoreList()
     }
     
-    func checkForNewCores(completionHandler handler: ((_ error: Error?) -> Void)? = nil) {
-        guard lastCoreListURLTask == nil else {
+    private func downloadCoreList(completionHandler handler: ((_ error: Error?) -> Void)? = nil) {
+        guard coreListURLTask == nil else {
             handler?(Errors.newCoreCheckAlreadyPendingError)
             return
         }
         
-        let coreListURL = URL(string: Bundle.main.infoDictionary!["OECoreListURL"] as! String)!
-        
-        lastCoreListURLTask = URLSession.shared.dataTask(with: coreListURL) {data, response , error in
+        let request = URLRequest(url: Self.coreListURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        coreListURLTask = URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
-                guard let data = data else {
+                guard let data = data,
+                      let cores = try? JSONDecoder().decode([Core].self, from: data)
+                else {
                     handler?(error)
-                    self.lastCoreListURLTask = nil
+                    self.coreListURLTask = nil
                     return
                 }
                 
-                if let coreList = try? XMLDocument(data: data, options: []),
-                   let coreNodes = try? coreList.nodes(forXPath: "/cores/core") as? [XMLElement] {
-                    for coreNode in coreNodes {
-                        guard
-                            let coreID = coreNode.attribute(forName: "id")?.stringValue,
-                            self.coresDict[coreID] == nil,
-                            let coreName = coreNode.attribute(forName: "name")?.stringValue,
-                            let systemNodes = try? coreNode.nodes(forXPath: "./systems/system") as? [XMLElement],
-                            let appcastURLString = coreNode.attribute(forName: "appcastURL")?.stringValue,
-                            let appcastURL = URL(string: appcastURLString)
-                        else { continue }
-                        
-                        let download = CoreDownload()
-                        download.name = coreName
-                        download.bundleIdentifier = coreID
-                        
-                        var systemNames: [String] = []
-                        var systemIdentifiers: [String] = []
-                        
-                        for systemNode in systemNodes {
-                            if let systemName = systemNode.stringValue {
-                                systemNames.append(systemName)
-                            }
-                            if let systemIdentifier = systemNode.attribute(forName: "id")?.stringValue {
-                                systemIdentifiers.append(systemIdentifier)
-                            }
-                        }
-                        
-                        download.systemNames = systemNames
-                        download.systemIdentifiers = systemIdentifiers
-                        download.canBeInstalled = true
-                        
-                        let appcast = CoreAppcast(url: appcastURL)
-                        
-                        DispatchQueue.main.async {
-                            do {
-                                try appcast.fetch {
-                                    download.appcastItem = appcast.items.first { $0.isSupported }
-                                    download.delegate = self
-                                    
-                                    if download == self.coreDownload {
-                                        download.start()
-                                    }
-                                    
-                                    self.updateCoreList()
-                                }
-                            } catch {
-                                NSLog("\(error)")
-                            }
-                        }
-                        
-                        self.coresDict[coreID] = download
-                    }
-                }
-                
-                self.updateCoreList()
+                self.cores = cores
                 
                 handler?(nil)
-                self.lastCoreListURLTask = nil
+                self.coreListURLTask = nil
             }
         }
         
-        lastCoreListURLTask?.resume()
+        coreListURLTask?.resume()
     }
     
-    func cancelCheckForNewCores() {
-        lastCoreListURLTask?.cancel()
-        lastCoreListURLTask = nil
+    func cancelCoreListDownload() {
+        coreListURLTask?.cancel()
+        coreListURLTask = nil
     }
     
     // MARK: - Installing with OEAlert
@@ -346,20 +344,28 @@ final class CoreUpdater: NSObject {
         coreDownload?.start()
     }
     
-    func failInstallWithError(_ error: Error?) {
+    private func failInstallWithError(_ error: Error?) {
         alert?.close(withResult: .alertFirstButtonReturn)
         
-        completionHandler?(OECorePlugin.corePlugin(bundleIdentifier: coreIdentifier!), error)
+        var plugin: OECorePlugin?
+        if let coreIdentifier = coreIdentifier {
+            plugin = OECorePlugin.corePlugin(bundleIdentifier: coreIdentifier)
+        }
+        completionHandler?(plugin, error)
         
         alert = nil
         coreIdentifier = nil
         completionHandler = nil
     }
     
-    func finishInstall() {
+    private func finishInstall() {
         alert?.close(withResult: .alertFirstButtonReturn)
         
-        completionHandler?(OECorePlugin.corePlugin(bundleIdentifier: coreIdentifier!), nil)
+        var plugin: OECorePlugin?
+        if let coreIdentifier = coreIdentifier {
+            plugin = OECorePlugin.corePlugin(bundleIdentifier: coreIdentifier)
+        }
+        completionHandler?(plugin, nil)
         
         alert = nil
         coreIdentifier = nil
@@ -404,6 +410,8 @@ extension CoreUpdater: CoreDownloadDelegate {
     func coreDownloadDidFail(_ download: CoreDownload, withError error: Error?) {
         updateCoreList()
         
+        download.removeObserver(self, forKeyPath: #keyPath(CoreDownload.progress), context: &CoreDownloadProgressContext)
+        
         if download == coreDownload {
             failInstallWithError(error)
         }
@@ -429,72 +437,75 @@ extension CoreUpdater: CoreDownloadDelegate {
     }
 }
 
-extension CoreUpdater {
-    
-    private func updaterDidFindValidUpdate(for plugin: OECorePlugin, item: CoreAppcastItem) {
-        
-        let coreID = plugin.bundleIdentifier.lowercased()
-        let download = coresDict[coreID]
-        download?.hasUpdate = true
-        download?.appcastItem = item
-        download?.delegate = self
-        
-        if autoInstall {
-            download?.start()
-        }
-        
-        updateCoreList()
-    }
+// MARK: -
+
+private typealias Architecture = String
+private extension Architecture {
+    static let arm64 = "arm64"
+    static let x86_64 = "x86_64"
 }
 
-private final class CoreAppcast {
+private struct Core: Codable {
+    let id, name: String
+    let systems: [String]
+    let releases: [Release]
+    private let experimental, deprecated: Bool?
     
-    let url: URL
-    var items: [CoreAppcastItem] = []
-    
-    init(url: URL) {
-        self.url = url
+    var isExperimental: Bool {
+        experimental == true
     }
     
-    func fetch(completionHandler handler: (() -> Void)? = nil) throws {
+    var isDeprecated: Bool {
+        deprecated == true
+    }
+    
+    var latestSupportedRelease: Release? {
+        var rel: Release?
+        let supportedReleases = releases.filter { $0.isSupported }
         
-        let items: [XMLElement]
-        let appcast = try XMLDocument(contentsOf: url, options: [])
-        items = try appcast.nodes(forXPath: "/rss/channel/item") as! [XMLElement]
-
-        for item in items {
-            if let enclosure = item.elements(forName: "enclosure").first,
-               let fileURL = enclosure.attribute(forName: "url")?.stringValue,
-               let url = URL(string: fileURL),
-               let version = enclosure.attribute(forName: "sparkle:version")?.stringValue,
-               let minOSVersion = item.elements(forName: "sparkle:minimumSystemVersion").first?.stringValue
-            {
-                self.items.append(CoreAppcastItem(url: url, version: version, minOSVersion: minOSVersion))
+        for release in supportedReleases {
+            if rel == nil || SUStandardVersionComparator.default.compareVersion(rel!.version, toVersion: release.version) != .orderedDescending {
+                rel = release
             }
         }
         
-        handler?()
+        return rel
+    }
+    
+    struct Release: Codable {
+        let version, url, sha256: String
+        let minimumSystemVersion: String
+        let architectures: [Architecture]
+        
+        var isSupported: Bool {
+            var isSupported = SUStandardVersionComparator.default.compareVersion(minimumSystemVersion, toVersion: Self.osVersionString) != .orderedDescending
+#if arch(arm64)
+            return isSupported && architectures.contains(.arm64)
+#elseif arch(x86_64)
+            return isSupported && architectures.contains(.x86_64)
+#endif
+        }
+        
+        private static let osVersionString: String = {
+            let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+            return "\(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)"
+        }()
     }
 }
 
-struct CoreAppcastItem {
+private extension OECorePlugin {
     
-    var version: String
-    var fileURL: URL
-    var minimumSystemVersion: String
-    
-    init(url: URL, version: String, minOSVersion: String) {
-        fileURL = url
-        self.version = version
-        minimumSystemVersion = minOSVersion
+    var architectures: [Architecture] {
+        var architectures: [Architecture] = []
+        let executableArchitectures = bundle.executableArchitectures as? [Int] ?? []
+        if executableArchitectures.contains(NSBundleExecutableArchitectureX86_64) {
+            architectures.append(.x86_64)
+        }
+        if #available(macOS 11.0, *),
+           executableArchitectures.contains(NSBundleExecutableArchitectureARM64)
+        {
+            architectures.append(.arm64)
+        }
+        return architectures
     }
-    
-    var isSupported: Bool {
-        return SUStandardVersionComparator.default.compareVersion(minimumSystemVersion, toVersion: Self.osVersionString) != .orderedDescending
-    }
-    
-    private static let osVersionString: String = {
-        let osVersion = ProcessInfo.processInfo.operatingSystemVersion
-        return "\(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)"
-    }()
 }

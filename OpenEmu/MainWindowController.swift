@@ -302,13 +302,13 @@ extension MainWindowController: LibraryControllerDelegate {
                     alert.messageText = NSLocalizedString("Downloading core list...", comment: "")
                     alert.defaultButtonTitle = NSLocalizedString("Cancel", comment: "")
                     alert.performBlockInModalSession {
-                        CoreUpdater.shared.checkForNewCores { error in
+                        CoreUpdater.shared.checkForUpdates(reloadData: true) { error in
                             alert.close(withResult: .alertSecondButtonReturn)
                         }
                     }
                     if alert.runModal() == .alertFirstButtonReturn {
                         // user says no
-                        CoreUpdater.shared.cancelCheckForNewCores()
+                        CoreUpdater.shared.cancelCoreListDownload()
                         DispatchQueue.main.async {
                             self.presentError(error)
                         }

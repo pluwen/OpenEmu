@@ -6291,7 +6291,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# For Build All + Experimental scheme, tell Sparkle where to find experimental app and cores\n/usr/libexec/PlistBuddy -c \"Set :OECoreListURL https://raw.github.com/OpenEmu/OpenEmu-Update/master/oecores-experimental.xml\" \"${BUILT_PRODUCTS_DIR}/OpenEmu.app/Contents/Info.plist\"\n\n/usr/libexec/PlistBuddy -c \"Set :SUFeedURL https://raw.github.com/OpenEmu/OpenEmu-Update/master/appcast-experimental.xml\" \"${BUILT_PRODUCTS_DIR}/OpenEmu.app/Contents/Info.plist\"\n";
+			shellScript = "# For Build All + Experimental scheme, tell Sparkle where to find experimental app and cores\n/usr/libexec/PlistBuddy -c \"Set :OEExperimental true\" \"${BUILT_PRODUCTS_DIR}/OpenEmu.app/Contents/Info.plist\"\n\n/usr/libexec/PlistBuddy -c \"Set :SUFeedURL https://raw.github.com/OpenEmu/OpenEmu-Update/master/appcast-experimental.xml\" \"${BUILT_PRODUCTS_DIR}/OpenEmu.app/Contents/Info.plist\"\n";
 		};
 		01E85CBE25389A8000980F83 /* Set Experimental Appcast URLs */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -6310,7 +6310,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# For Build All + Experimental scheme, tell Sparkle where to find experimental app and cores\n/usr/libexec/PlistBuddy -c \"Set :OECoreListURL https://raw.github.com/OpenEmu/OpenEmu-Update/master/oecores-experimental.xml\" \"${BUILT_PRODUCTS_DIR}/OpenEmu.app/Contents/Info.plist\"\n\n/usr/libexec/PlistBuddy -c \"Set :SUFeedURL https://raw.github.com/OpenEmu/OpenEmu-Update/master/appcast-experimental.xml\" \"${BUILT_PRODUCTS_DIR}/OpenEmu.app/Contents/Info.plist\"\n";
+			shellScript = "# For Build All + Experimental scheme, tell Sparkle where to find experimental app and cores\n/usr/libexec/PlistBuddy -c \"Set :OEExperimental true\" \"${BUILT_PRODUCTS_DIR}/OpenEmu.app/Contents/Info.plist\"\n\n/usr/libexec/PlistBuddy -c \"Set :SUFeedURL https://raw.github.com/OpenEmu/OpenEmu-Update/master/appcast-experimental.xml\" \"${BUILT_PRODUCTS_DIR}/OpenEmu.app/Contents/Info.plist\"\n";
 		};
 		37C80308101564B000356EF3 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
